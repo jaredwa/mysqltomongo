@@ -1,0 +1,275 @@
+<?php
+
+// Database file handles and extends standard Mongo functionality
+
+function databaseGet() {
+  $host = 'localhost:27017';
+ $database = 'yourdatabase';
+ $connection = new Mongo($host);
+ $database = $connection->selectDB($database);
+ return $database;
+}
+
+// upload an image with the name $_POST 
+function databaseUploadImage() {
+	$database = databaseGet();
+ $gridfs = $database->getGridFS();
+ $images = array();
+ if ($_POST["images"])
+ 	$images = $_POST["images"];
+ foreach ($images as $i) {
+		if ($_FILES[$i["file"]]["tmp_name"] && $_FILES[$i["file"]]["type"] == "image/jpeg") {
+			$gridfs->remove(array('name' => $i["name"]));
+			if ($i["width"] && $i["height"]) 
+				imageSize($_FILES[$i["file"]]['tmp_name'],$_FILES[$i["file"]]['tmp_name'],$i["width"],$i["height"],$_FILES[$i["file"]]["type"]);
+	  $gridfs->storeFile($_FILES[$i["file"]]['tmp_name'], array('name'=>$i["name"],'size'=>$_FILES[$i["file"]]["size"],'type'=>'image/jpeg'), array('safe' => true));
+		}
+	}
+}
+
+function databaseFileExists($file) {
+	$database = databaseGet();
+ $gridfs = $database->getGridFS();
+ if ($gridfs->findOne(array('name' => $file)))
+ 	return 1;
+ else
+ 	return 0;
+}
+
+function databaseGetCount($table,$query="") {
+	$database = databaseGet();
+ $collection = $database->{$table};
+ $queryMongoArray = array();
+ if ($query) {
+	 $query = trim(str_replace("where ","",$query));
+	 $queryArray = explode(" and ",$query);
+	 foreach ($queryArray as $q) {	 	 
+	 	if (stristr($q," > ") != FALSE) {
+	 		$queryArrayItem = explode(">",$q);	
+	 		if (stristr($query,trim($queryArrayItem)." < ") != FALSE) {
+	 			foreach ($queryArray as $q2) {
+	 				if (stristr($q2,trim($queryArrayItem)." < ") != FALSE) {
+	 					$queryArrayItem2 =  explode("<",$q2);
+	 					$queryReg = array('$gt'=>(int)str_replace("'","",trim($queryArrayItem[1])),'$lt'=>(int)str_replace("'","",trim($queryArrayItem2[1])));
+	 				} 			
+	 			}
+	 		}
+	 		else
+			 	$queryReg = array('$gt'=>str_replace("'","",trim($queryArrayItem[1])));
+		 }
+		 elseif (stristr($q," < ") !== FALSE) {
+	 		$queryArrayItem = explode("<",$q);		 		
+		 	$queryReg = array('$lt'=>str_replace("'","",trim($queryArrayItem[1])));
+		 }
+		 else { 
+		 	$queryArrayItem = explode("=",$q);	 	
+		 	if (is_numeric($queryArrayItem[1]))
+					$queryReg = $queryArrayItem[1];
+				elseif (trim($queryArrayItem[0]) == '_id') 					
+					$queryReg = new MongoId(trim($queryArrayItem[1].""));
+				elseif (trim($queryArrayItem[1]) == 'true') 
+					$queryReg = true;					
+				elseif (trim($queryArrayItem[1]) == "") {
+					$queryReg = '""';
+				}
+				else
+			 	$queryReg = new MongoRegex("/".str_replace("'","",trim($queryArrayItem[1]))."/i");
+		 }
+	 	$queryArrayItem[0] = trim($queryArrayItem[0]);
+	 	if ($queryMongoArray != array() ) {
+	 		$newArray = array($queryArrayItem[0]=>$queryReg);	 
+	  	$queryMongoArray = array_merge($newArray,$queryMongoArray);	  	
+	  }
+	  else 
+	  	$queryMongoArray = array($queryArrayItem[0]=>$queryReg);	  		
+	 }	 
+	}	
+//print '<div style="background:#333">';	
+//print_r($queryMongoArray);
+//print '<hr /></div>';
+	$obj = $collection->count($queryMongoArray);
+	return $obj;
+}
+
+function databaseGetField($table,$field,$id="",$query="") {	
+	$database = databaseGet();
+ $collection = $database->{$table};
+ if ($id) {
+ 	if ($query != '')
+ 		$query .= ", ";
+ 	$query .= "_id = ".$id." ";
+ 	} 
+ // break up query
+ $sortMongoArray = array(); 
+ if ($query) {
+	 $query = trim(str_replace("where ","",$query));
+	 $queryArray = explode(" and ",$query);
+	 $queryMongoArray = array();
+	 foreach ($queryArray as $q) {
+	 	$queryArrayItem = explode("=",$q);	 	
+	 	if (is_numeric($queryArrayItem[1]))
+				$queryReg = $queryArrayItem[1];
+			elseif (trim($queryArrayItem[0]) == '_id')
+				$queryReg = new MongoId(trim($queryArrayItem[1]));
+			elseif (trim($queryArrayItem[1]) == 'true') 
+					$queryReg = true;				
+			else
+		 	$queryReg = new MongoRegex("/".str_replace("'","",trim($queryArrayItem[1]))."/i");
+	 	if ($queryMongoArray != array() ) 
+	  	$queryMongoArray = array_merge(array(trim($queryArrayItem[0])=>$queryReg),$queryMongoArray);
+	  else
+	  	$queryMongoArray = array(trim($queryArrayItem[0])=>$queryReg);
+	 }
+	} 
+		if ($queryMongoArray == array())
+			$obj = $collection->find(array(),array(trim($field)=>true));
+		else
+			$obj = $collection->find($queryMongoArray,array(trim($field)=>true));
+		$array = iterator_to_array($obj);
+		//$array = array_unique($array);
+	//print_r($connection->lastError());
+	if ($id) {
+		$r  = current($array);
+		return $r["$field"];	
+	}
+	else {
+		foreach ($array as &$a) {
+			$a["id"] = (string)$a["_id"];
+		}
+		$arrayOriginal = $array;
+		$array = array();
+		foreach ($arrayOriginal as $a) {
+			$array[] = $a[$field];	
+		}
+	}
+	return $array;
+	/*
+	$connections = $collection->getConnections();
+
+	foreach ( $connections as $con ) {
+    if ( $con['connection']['connection_type_desc'] == "SECONDARY" ) {
+        echo "Closing '{$con['hash']}': ";
+        $closed = $a->close( $con['hash'] );
+        echo $closed ? "ok" : "failed", "\n";
+  }
+ }	 */ 
+}
+
+function databaseGetArray($table,$id="",$query="",$sort="",$limit=0,$start=0) {	
+	$database = databaseGet();
+ $collection = $database->{$table};
+ if ($id) {
+ 	if ($query != '')
+ 		$query .= ", ";
+ 	$query .= "_id = ".$id." ";
+ 	} 
+ // break up query
+ $sortMongoArray = array(); 
+ if ($query) {
+	 $query = trim(str_replace("where ","",$query));
+	 $queryArray = explode(" and ",$query);
+	 $queryMongoArray = array();
+	 foreach ($queryArray as $q) {	 
+	 	if (stristr($q," > ") !== FALSE) {	 	
+	 		$queryArrayItem = explode(">",$q);	
+		 	$queryReg = array('$gt'=>trim($queryArrayItem[1]));
+		 }
+		 elseif (stristr($q," < ") !== FALSE) {
+	 		$queryArrayItem = explode("<",$q);	
+		 	$queryReg = array('$lt'=>trim($queryArrayItem[1]));
+		 }
+		 else { 
+		 	$queryArrayItem = explode("=",$q);	 	
+		 	if (is_numeric($queryArrayItem[1]))
+					$queryReg = $queryArrayItem[1];
+				elseif (trim($queryArrayItem[0]) == '_id')
+					$queryReg = new MongoId(trim($queryArrayItem[1]));
+				elseif (trim($queryArrayItem[1]) == 'true') 
+					$queryReg = true;
+				else 
+			 	$queryReg = new MongoRegex("/".str_replace("'","",trim($queryArrayItem[1]))."/i");			 	
+		 }		 
+	 	if ($queryMongoArray != array() ) 
+	  	$queryMongoArray = array_merge(array(trim($queryArrayItem[0])=>$queryReg),$queryMongoArray);
+	  else
+	  	$queryMongoArray = array(trim($queryArrayItem[0])=>$queryReg);	  	
+	 }
+	} 
+ if ($sort) {
+ 	$sortArray = explode(",",$sort);
+ 	foreach ($sortArray as $s) {
+ 		if (stristr($s,	" desc") !== FALSE) {
+ 			$s = str_ireplace(" desc", "", $s);
+ 			$sorter = array($s=>-1);
+ 		}
+ 		else 
+	 		$sorter = array($s=>1);
+ 		if ($sortMongoArray != array())
+ 			$sortMongoArray = array_merge($sorter,$sortMongoArray);
+ 		else
+	 		$sortMongoArray = $sorter;
+ 	}
+ } 
+		if ($queryMongoArray == array())
+			$obj = $collection->find()->limit($limit)->skip($start);
+		else
+			$obj = $collection->find($queryMongoArray)->limit($limit)->skip($start);
+		if ($sortMongoArray != array());
+			$obj->sort($sortMongoArray);	
+	$array = iterator_to_array($obj);
+	//print_r($connection->lastError());
+	foreach ($array as &$a) {
+		$a["id"] = $a["_id"];
+	}
+	return $array;
+	/*
+	$connections = $collection->getConnections();
+
+	foreach ( $connections as $con ) {
+    if ( $con['connection']['connection_type_desc'] == "SECONDARY" ) {
+        echo "Closing '{$con['hash']}': ";
+        $closed = $a->close( $con['hash'] );
+        echo $closed ? "ok" : "failed", "\n";
+  }
+ }	 */ 
+}
+
+function databaseInsertUpdate($ua="") {
+	if ($ua == "" && $_POST["table"] !="") {
+		$ua = $_POST;
+	}
+	unset($ua["images"]);
+	unset($ua["gDo"]);
+	unset($ua["lDo"]);
+	$database = databaseGet();
+ $collection = $database->{$ua["table"]};
+ unset($ua["table"]);
+	if ($ua["id"]) {
+		$obj = $collection->findOne(array('_id' => new MongoId($ua["id"])));
+		unset($ua["id"]);
+	}
+	foreach ($ua as $var => $val)  {
+		if ($val !== "") {
+			if ($val == "true")
+				$obj[$var] = true;
+			elseif ($val == "false")
+				$obj[$var] = false;				
+			else
+				$obj[$var] = $val;	
+			
+		}
+	}		
+ $collection->save($obj);
+ return $obj["_id"];
+}
+
+function databaseRemove($ua="") {
+	if ($ua == "" && $_POST["table"] !="") {
+		$ua = $_POST;
+	}
+	$database = databaseGet();
+ $collection = $database->{$ua["table"]};
+	if ($ua["id"]) 
+		$obj = $collection->remove(array('_id' => new MongoId($ua["id"])));
+}
+?>
